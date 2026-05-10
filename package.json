@@ -2,10 +2,16 @@
   "name": "math-on-selections",
   "displayName": "Math on Selections",
   "description": "Apply math equations to all numbers in your selections, with hex format preservation and big-number precision.",
-  "version": "0.1.0",
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Other"],
-  "activationEvents": [],
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
