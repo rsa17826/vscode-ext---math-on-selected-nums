@@ -10,8 +10,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:mathOnSelections.run"
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
