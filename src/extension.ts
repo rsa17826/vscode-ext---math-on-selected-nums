@@ -216,6 +216,40 @@ function divideNums(dividend: string, divisor: string, precision = 10): string {
     return resultNeg && result !== '0' ? '-' + result : result;
 }
 
+/**
+ * Raise base to an integer or fractional exponent.
+ *   - Non-negative integer exponent → exact big-number repeated squaring.
+ *   - Negative integer exponent     → 1 / base^|exp| (exact division).
+ *   - Fractional exponent           → JS Math.pow (precision limited but unavoidable).
+ */
+function powerNums(base: string, exp: string): string {
+    const expIsNegInt = /^-\d+$/.test(exp);
+    const expIsPosInt = /^\d+$/.test(exp);
+
+    if (expIsPosInt) {
+        let n = parseInt(exp, 10);
+        if (n === 0) return '1';
+        let result = '1';
+        let b = base;
+        // Fast exponentiation by squaring (exact)
+        while (n > 0) {
+            if (n % 2 === 1) result = multiplyNums(result, b);
+            b = multiplyNums(b, b);
+            n = Math.floor(n / 2);
+        }
+        return result;
+    }
+
+    if (expIsNegInt) {
+        // base^-n = 1 / base^n
+        return divideNums('1', powerNums(base, exp.slice(1)));
+    }
+
+    // Fractional exponent — fall back to JS floating point
+    const result = Math.pow(parseFloat(base), parseFloat(exp));
+    return String(result);
+}
+
 // ─── Hex Utilities ────────────────────────────────────────────────────────────
 
 /**
@@ -274,7 +308,17 @@ function tokenize(expr: string): Token[] {
         if (/\s/.test(expr[i])) { i++; continue; }
         if (expr[i] === '(') { tokens.push({ type: 'lparen' }); i++; continue; }
         if (expr[i] === ')') { tokens.push({ type: 'rparen' }); i++; continue; }
-        if ('+-*/'.includes(expr[i])) { tokens.push({ type: 'op', value: expr[i] }); i++; continue; }
+        if ('+-*/^'.includes(expr[i])) {
+            // Check for ** before consuming a lone *
+            if (expr[i] === '*' && expr[i + 1] === '*') {
+                tokens.push({ type: 'op', value: '**' });
+                i += 2;
+            } else {
+                tokens.push({ type: 'op', value: expr[i] });
+                i++;
+            }
+            continue;
+        }
         if (/\d/.test(expr[i])) {
             // Hex literal: 0x... or 0X...
             if (expr[i] === '0' && i + 1 < expr.length && /x/i.test(expr[i + 1])) {
@@ -324,15 +368,27 @@ class ExprParser {
     }
 
     private parseTerm(): string {
-        let left = this.parseUnary();
+        let left = this.parsePower();
         while (true) {
             const t = this.peek();
             if (!t || t.type !== 'op' || (t.value !== '*' && t.value !== '/')) break;
             const op = (this.consume() as { type: 'op'; value: string }).value;
-            const right = this.parseUnary();
+            const right = this.parsePower();
             left = op === '*' ? multiplyNums(left, right) : divideNums(left, right);
         }
         return left;
+    }
+
+    // Right-associative: 2**3**2 = 2**(3**2) = 512
+    private parsePower(): string {
+        const base = this.parseUnary();
+        const t = this.peek();
+        if (t && t.type === 'op' && (t.value === '**' || t.value === '^')) {
+            this.consume();
+            const exp = this.parsePower(); // right-recursive
+            return powerNums(base, exp);
+        }
+        return base;
     }
 
     private parseUnary(): string {
