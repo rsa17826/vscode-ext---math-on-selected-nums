@@ -1,0 +1,28 @@
+{
+  "name": "math-on-selections",
+  "displayName": "Math on Selections",
+  "description": "Apply math equations to all numbers in your selections, with hex format preservation and big-number precision.",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mathOnSelections.run",
+        "title": "Math: Apply Equation to Selected Numbers"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}
