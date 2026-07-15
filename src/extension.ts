@@ -471,7 +471,7 @@ function tokenize(expr: string): Token[] {
 class ExprParser {
   private tokens: Token[]
   private pos = 0
-  usedRoundingKeyword = false
+  usedIntKeyword = false
 
   constructor(tokens: Token[]) {
     this.tokens = tokens
@@ -515,7 +515,6 @@ class ExprParser {
       const t = this.peek()
       if (!t || t.type !== "keyword") break
       this.consume()
-      this.usedRoundingKeyword = true
       const kw = (
         t as {
           type: "keyword"
@@ -525,7 +524,10 @@ class ExprParser {
       if (kw === "floor") val = floorNumStr(val)
       else if (kw === "ceil") val = ceilNumStr(val)
       else if (kw === "round") val = roundNumStr(val)
-      else val = intNumStr(val)
+      else {
+        val = intNumStr(val)
+        this.usedIntKeyword = true
+      }
     }
     return val
   }
@@ -609,14 +611,14 @@ function evaluateExpr(
   equation: string,
   value: string,
   index: number,
-): { result: string; usedRoundingKeyword: boolean } {
+): { result: string; usedIntKeyword: boolean } {
   const substituted = equation
     .replace(/\$/g, `(${value})`)
     .replace(/\bi\b/g, `(${index})`)
   const tokens = tokenize(substituted)
   const parser = new ExprParser(tokens)
   const result = parser.parse()
-  return { result, usedRoundingKeyword: parser.usedRoundingKeyword }
+  return { result, usedIntKeyword: parser.usedIntKeyword }
 }
 
 // ─── Number Processing ────────────────────────────────────────────────────────
@@ -667,17 +669,15 @@ function processNumber(
     return decStrToHex(result, caseStyle)
   } else {
     const originalHadDot = numText.includes(".")
-    const { result, usedRoundingKeyword } = evaluateExpr(
+    const { result, usedIntKeyword } = evaluateExpr(
       equation,
       numText,
       index,
     )
-    // An explicit floor/ceil/round/int means the user wants a whole
-    // number, regardless of whether the original selection had a dot.
-    return formatResult(
-      result,
-      originalHadDot && !usedRoundingKeyword,
-    )
+    // `int` explicitly means "give me a whole number, no decimal" — it
+    // always strips the .0. floor/ceil/round behave like normal arithmetic
+    // and keep the .0 if the original selection had a decimal point.
+    return formatResult(result, originalHadDot && !usedIntKeyword)
   }
 }
 
