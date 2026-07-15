@@ -108,6 +108,48 @@ function subNums(num1: string, num2: string): string {
   return addNums(num1, "-" + num2)
 }
 
+// ─── floor / ceil / round (string-based, no float precision loss) ────────────
+
+function floorNumStr(numStr: string): string {
+  const neg = numStr.startsWith("-")
+  const s = neg ? numStr.slice(1) : numStr
+  const [intPart, decPart] = s.split(".")
+  if (!decPart || /^0*$/.test(decPart))
+    return (neg ? "-" : "") + intPart
+  if (!neg) return intPart
+  return "-" + addNums(intPart, "1")
+}
+
+function ceilNumStr(numStr: string): string {
+  const neg = numStr.startsWith("-")
+  const s = neg ? numStr.slice(1) : numStr
+  const [intPart, decPart] = s.split(".")
+  if (!decPart || /^0*$/.test(decPart))
+    return (neg ? "-" : "") + intPart
+  if (neg) return "-" + intPart
+  return addNums(intPart, "1")
+}
+
+function roundNumStr(numStr: string): string {
+  const neg = numStr.startsWith("-")
+  const s = neg ? numStr.slice(1) : numStr
+  const [intPart, decPart] = s.split(".")
+  if (!decPart || /^0*$/.test(decPart))
+    return (neg ? "-" : "") + intPart
+  const roundUp = Number(decPart[0]) >= 5
+  const intResult = roundUp ? addNums(intPart, "1") : intPart
+  return (neg ? "-" : "") + intResult
+}
+
+// Truncate toward zero — same as floor for positives, but unlike floor it
+// never rounds negatives further away from zero (-5.1 → -5, not -6).
+function intNumStr(numStr: string): string {
+  const neg = numStr.startsWith("-")
+  const s = neg ? numStr.slice(1) : numStr
+  const intPart = s.split(".")[0] || "0"
+  return (neg && intPart !== "0" ? "-" : "") + intPart
+}
+
 function multiplyNums(num1: string, num2: string): string {
   const neg1 = num1.startsWith("-")
   const neg2 = num2.startsWith("-")
@@ -347,6 +389,7 @@ type Token =
   | { type: "op"; value: string }
   | { type: "lparen" }
   | { type: "rparen" }
+  | { type: "keyword"; value: "floor" | "ceil" | "round" | "int" }
 
 function tokenize(expr: string): Token[] {
   const tokens: Token[] = []
@@ -377,7 +420,10 @@ function tokenize(expr: string): Token[] {
       }
       continue
     }
-    if (/\d/.test(expr[i])) {
+    if (
+      /\d/.test(expr[i]) ||
+      (expr[i] === "." && /\d/.test(expr[i + 1] ?? ""))
+    ) {
       // Hex literal: 0x... or 0X...
       if (
         expr[i] === "0" &&
@@ -399,6 +445,22 @@ function tokenize(expr: string): Token[] {
       tokens.push({ type: "num", value: num })
       continue
     }
+    if (/[a-zA-Z]/.test(expr[i])) {
+      let word = ""
+      while (i < expr.length && /[a-zA-Z]/.test(expr[i]))
+        word += expr[i++]
+      const lower = word.toLowerCase()
+      if (
+        lower === "floor" ||
+        lower === "ceil" ||
+        lower === "round" ||
+        lower === "int"
+      ) {
+        tokens.push({ type: "keyword", value: lower })
+        continue
+      }
+      throw new Error(`Unknown keyword: "${word}"`)
+    }
     throw new Error(
       `Unexpected character in expression: "${expr[i]}"`,
     )
@@ -409,6 +471,7 @@ function tokenize(expr: string): Token[] {
 class ExprParser {
   private tokens: Token[]
   private pos = 0
+  usedRoundingKeyword = false
 
   constructor(tokens: Token[]) {
     this.tokens = tokens
@@ -443,7 +506,28 @@ class ExprParser {
       const right = this.parseTerm()
       left = op === "+" ? addNums(left, right) : subNums(left, right)
     }
-    return left
+    return this.applyTrailingKeywords(left)
+  }
+
+  private applyTrailingKeywords(value: string): string {
+    let val = value
+    while (true) {
+      const t = this.peek()
+      if (!t || t.type !== "keyword") break
+      this.consume()
+      this.usedRoundingKeyword = true
+      const kw = (
+        t as {
+          type: "keyword"
+          value: "floor" | "ceil" | "round" | "int"
+        }
+      ).value
+      if (kw === "floor") val = floorNumStr(val)
+      else if (kw === "ceil") val = ceilNumStr(val)
+      else if (kw === "round") val = roundNumStr(val)
+      else val = intNumStr(val)
+    }
+    return val
   }
 
   private parseTerm(): string {
@@ -521,10 +605,18 @@ class ExprParser {
  * Evaluate the equation string with `$` substituted by `value`.
  * The value is wrapped in parens so negative values work safely.
  */
-function evaluateExpr(equation: string, value: string): string {
-  const substituted = equation.replace(/\$/g, `(${value})`)
+function evaluateExpr(
+  equation: string,
+  value: string,
+  index: number,
+): { result: string; usedRoundingKeyword: boolean } {
+  const substituted = equation
+    .replace(/\$/g, `(${value})`)
+    .replace(/\bi\b/g, `(${index})`)
   const tokens = tokenize(substituted)
-  return new ExprParser(tokens).parse()
+  const parser = new ExprParser(tokens)
+  const result = parser.parse()
+  return { result, usedRoundingKeyword: parser.usedRoundingKeyword }
 }
 
 // ─── Number Processing ────────────────────────────────────────────────────────
@@ -540,15 +632,52 @@ interface Replacement {
   range: vscode.Range
 }
 
-function processNumber(numText: string, equation: string): string {
+/**
+ * Normalize a raw result string: strip trailing zero decimals, then
+ * decide whether to keep a ".0" based on whether the *original* selected
+ * number had a decimal point.
+ *   - original had no "."  → never force a ".0" (e.g. 5 stays 5)
+ *   - original had a "."   → whole-number results get ".0" (e.g. 5.0)
+ * Results with genuine non-zero decimals are left untouched either way.
+ */
+function formatResult(raw: string, originalHadDot: boolean): string {
+  const neg = raw.startsWith("-")
+  const s = neg ? raw.slice(1) : raw
+  let [intPart, decPart] = s.split(".")
+  intPart = intPart || "0"
+  if (decPart) decPart = decPart.replace(/0+$/, "")
+
+  const sign = neg ? "-" : ""
+  if (!decPart) {
+    return sign + intPart + (originalHadDot ? ".0" : "")
+  }
+  return sign + intPart + "." + decPart
+}
+
+function processNumber(
+  numText: string,
+  equation: string,
+  index: number,
+): string {
   const isHex = /^0x/i.test(numText)
   if (isHex) {
     const caseStyle = detectHexCase(numText)
     const dec = hexToDecStr(numText)
-    const result = evaluateExpr(equation, dec)
+    const { result } = evaluateExpr(equation, dec, index)
     return decStrToHex(result, caseStyle)
   } else {
-    return evaluateExpr(equation, numText)
+    const originalHadDot = numText.includes(".")
+    const { result, usedRoundingKeyword } = evaluateExpr(
+      equation,
+      numText,
+      index,
+    )
+    // An explicit floor/ceil/round/int means the user wants a whole
+    // number, regardless of whether the original selection had a dot.
+    return formatResult(
+      result,
+      originalHadDot && !usedRoundingKeyword,
+    )
   }
 }
 
@@ -580,8 +709,9 @@ export function activate(context: vscode.ExtensionContext): void {
       // ── Ask for equation ──────────────────────────────────────────────────
       const raw = await vscode.window.showInputBox({
         prompt:
-          "Equation  ($ = each number). No $ → prepended automatically.",
-        placeHolder: "$/2   or   $*2+1   or   /3   or   +100",
+          "Equation  ($ = each number, i = its index). No $ → prepended automatically. Optional floor/ceil/round/int.",
+        placeHolder:
+          "$/2   or   $+i   or   /3 floor   or   ($/4int)+.5",
         validateInput(val) {
           if (!val.trim()) return "Please enter an equation."
           return null
@@ -592,9 +722,14 @@ export function activate(context: vscode.ExtensionContext): void {
       // If user didn't include $, prepend it (so "/2" → "$/2")
       const equation = raw.includes("$") ? raw : "$" + raw
 
-      // ── Collect all replacements ──────────────────────────────────────────
+      // ── Collect all raw matches first (positions only) ──────────────────────
       const document = editor.document
-      const replacements: Replacement[] = []
+      interface RawMatch {
+        numText: string
+        startOff: number
+        endOff: number
+      }
+      const rawMatches: RawMatch[] = []
       const processedOffsets = new Set<number>() // avoid duplicates from overlapping selections
 
       for (const selection of selections) {
@@ -612,39 +747,46 @@ export function activate(context: vscode.ExtensionContext): void {
           if (processedOffsets.has(startOff)) continue
           processedOffsets.add(startOff)
 
-          let newText: string
-          try {
-            newText = processNumber(numText, equation)
-          } catch (err) {
-            vscode.window.showErrorMessage(
-              `Math on Selections: Error processing "${numText}": ${err}`,
-            )
-            return
-          }
-
-          replacements.push({
-            originalStartOffset: startOff,
-            originalEndOffset: endOff,
-            newText,
-            range: new vscode.Range(
-              document.positionAt(startOff),
-              document.positionAt(endOff),
-            ),
-          })
+          rawMatches.push({ numText, startOff, endOff })
         }
       }
 
-      if (replacements.length === 0) {
+      if (rawMatches.length === 0) {
         vscode.window.showInformationMessage(
           "Math on Selections: No numbers found in selection(s).",
         )
         return
       }
 
-      // Sort by document order (required for correct offset tracking after edits)
-      replacements.sort(
-        (a, b) => a.originalStartOffset - b.originalStartOffset,
-      )
+      // Sort by document order first, so `i` reflects each number's index
+      // in document order (required for correct offset tracking too).
+      rawMatches.sort((a, b) => a.startOff - b.startOff)
+
+      // ── Evaluate the equation for each match, now that `i` is known ────────
+      const replacements: Replacement[] = []
+      for (let i = 0; i < rawMatches.length; i++) {
+        const { numText, startOff, endOff } = rawMatches[i]
+
+        let newText: string
+        try {
+          newText = processNumber(numText, equation, i)
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `Math on Selections: Error processing "${numText}": ${err}`,
+          )
+          return
+        }
+
+        replacements.push({
+          originalStartOffset: startOff,
+          originalEndOffset: endOff,
+          newText,
+          range: new vscode.Range(
+            document.positionAt(startOff),
+            document.positionAt(endOff),
+          ),
+        })
+      }
 
       // ── Apply all edits in one transaction ────────────────────────────────
       const success = await editor.edit((builder) => {
@@ -691,4 +833,3 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   /* nothing to clean up */
 }
-// TODO add option to round or floor or ceil
