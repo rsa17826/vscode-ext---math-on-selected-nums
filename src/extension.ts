@@ -506,7 +506,7 @@ class ExprParser {
       const right = this.parseTerm()
       left = op === "+" ? addNums(left, right) : subNums(left, right)
     }
-    return this.applyTrailingKeywords(left)
+    return left
   }
 
   private applyTrailingKeywords(value: string): string {
@@ -550,7 +550,7 @@ class ExprParser {
           multiplyNums(left, right)
         : divideNums(left, right)
     }
-    return left
+    return this.applyTrailingKeywords(left)
   }
 
   // Right-associative: 2**3**2 = 2**(3**2) = 512
@@ -833,3 +833,4 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   /* nothing to clean up */
 }
+// TODO add option to round or floor or ceil
