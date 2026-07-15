@@ -833,4 +833,3 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   /* nothing to clean up */
 }
-// TODO add option to round or floor or ceil
