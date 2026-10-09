@@ -42,39 +42,31 @@ function addNums(num1: string, num2: string): string {
   let carry = 0
 
   if (n1.startsWith("-") !== n2.startsWith("-")) {
-    // Different signs → subtract absolute values (n1 - n2 conceptually)
-    let borrowPos: number | false = false
-    const j1 = n1
-      .replace("-", "")
-      .replace(".", "")
-      .split("")
-      .map(Number)
-    const j2 = n2
-      .replace("-", "")
-      .replace(".", "")
-      .split("")
-      .map(Number)
-    const res: number[] = [...j1]
-    let i = 0
-    while (true) {
-      if (i === res.length) break
-      if (borrowPos !== false) {
-        res[i] -= 1
-      } else {
-        res[i] -= j2[i]
-      }
-      if (res[i] < 0) {
-        if (borrowPos === false) borrowPos = i
-        res[i] += 10
-        i -= 1
-      } else {
-        if (borrowPos !== false) i = borrowPos
-        borrowPos = false
-        i += 1
+    // Different signs → subtract the smaller absolute value from the larger;
+    // the result takes the sign of whichever operand has the larger magnitude.
+    const a1 = n1.replace("-", "")
+    const a2 = n2.replace("-", "")
+    // aligned → same length and same dot position, so string compare works
+    const cmp =
+      a1 === a2 ? 0
+      : a1 > a2 ? 1
+      : -1
+    if (cmp === 0) return "0"
+    const [big, small] = cmp > 0 ? [a1, a2] : [a2, a1]
+    const bigNeg = cmp > 0 ? n1.startsWith("-") : n2.startsWith("-")
+    const dotIdx = big.indexOf(".")
+    const bd = big.replace(".", "").split("").map(Number)
+    const sd = small.replace(".", "").split("").map(Number)
+    for (let i = bd.length - 1; i >= 0; i--) {
+      bd[i] -= sd[i]
+      if (bd[i] < 0) {
+        bd[i] += 10
+        bd[i - 1] -= 1 // big >= small so i - 1 always exists here
       }
     }
-    const dotIdx = n1.replace("-", "").indexOf(".")
-    return insertAtIndex(res.join(""), ".", dotIdx)
+    let out = insertAtIndex(bd.join(""), ".", dotIdx)
+    out = out.replace(/^0+(?=\d)/, "")
+    return (bigNeg ? "-" : "") + out
   } else {
     // Same sign → add absolute values, then restore sign
     const negative = n1.startsWith("-")
@@ -106,6 +98,13 @@ function addNums(num1: string, num2: string): string {
 function subNums(num1: string, num2: string): string {
   if (num2.startsWith("-")) return addNums(num1, num2.slice(1))
   return addNums(num1, "-" + num2)
+}
+
+/** Returns -1, 0 or 1 for a < b, a == b, a > b (exact, string-based). */
+function compareNums(a: string, b: string): number {
+  const d = subNums(a, b)
+  if (/^-?0*\.?0*$/.test(d)) return 0
+  return d.startsWith("-") ? -1 : 1
 }
 
 // ─── floor / ceil / round (string-based, no float precision loss) ────────────
@@ -409,6 +408,29 @@ function tokenize(expr: string): Token[] {
       i++
       continue
     }
+    if (
+      ">" === expr[i] ||
+      "<" === expr[i] ||
+      "=" === expr[i] ||
+      "!" === expr[i]
+    ) {
+      const two = expr.slice(i, i + 2)
+      if (
+        two === ">=" ||
+        two === "<=" ||
+        two === "!=" ||
+        two === "=="
+      ) {
+        tokens.push({ type: "op", value: two === "==" ? "=" : two })
+        i += 2
+        continue
+      }
+      if (expr[i] === "!")
+        throw new Error('Unexpected "!" (did you mean "!="?)')
+      tokens.push({ type: "op", value: expr[i] })
+      i++
+      continue
+    }
     if ("+-*/^".includes(expr[i])) {
       // Check for ** before consuming a lone *
       if (expr[i] === "*" && expr[i + 1] === "*") {
@@ -472,9 +494,34 @@ class ExprParser {
   private tokens: Token[]
   private pos = 0
   usedIntKeyword = false
+  // true when the whole equation is a top-level comparison (→ selection filter)
+  isFilter = false
 
   constructor(tokens: Token[]) {
     this.tokens = tokens
+  }
+
+  // Comparison has the lowest precedence. Yields "1" / "0".
+  private parseCompare(): string {
+    const left = this.parseExpr()
+    const t = this.peek()
+    if (
+      !t ||
+      t.type !== "op" ||
+      !["<", ">", "<=", ">=", "=", "!="].includes(t.value)
+    )
+      return left
+    this.consume()
+    const right = this.parseExpr()
+    const c = compareNums(left, right)
+    const ok =
+      t.value === "<" ? c < 0
+      : t.value === ">" ? c > 0
+      : t.value === "<=" ? c <= 0
+      : t.value === ">=" ? c >= 0
+      : t.value === "=" ? c === 0
+      : c !== 0
+    return ok ? "1" : "0"
   }
 
   private peek(): Token | undefined {
@@ -485,9 +532,26 @@ class ExprParser {
   }
 
   parse(): string {
-    const val = this.parseExpr()
+    const startPos = this.pos
+    const val = this.parseCompare()
     if (this.pos < this.tokens.length)
       throw new Error("Unexpected token after expression end")
+    // If a comparison operator was consumed at the top level, this is a filter
+    this.isFilter = this.tokens
+      .slice(startPos, this.pos)
+      .some((tok, idx, arr) => {
+        if (
+          tok.type !== "op" ||
+          !["<", ">", "<=", ">=", "=", "!="].includes(tok.value)
+        )
+          return false
+        let depth = 0
+        for (let k = 0; k < idx; k++) {
+          if (arr[k].type === "lparen") depth++
+          else if (arr[k].type === "rparen") depth--
+        }
+        return depth === 0
+      })
     return val
   }
 
@@ -593,7 +657,7 @@ class ExprParser {
     }
     if (t.type === "lparen") {
       this.consume()
-      const val = this.parseExpr()
+      const val = this.parseCompare()
       if (!this.peek() || this.peek()!.type !== "rparen")
         throw new Error("Expected closing )")
       this.consume()
@@ -611,14 +675,18 @@ function evaluateExpr(
   equation: string,
   value: string,
   index: number,
-): { result: string; usedIntKeyword: boolean } {
+): { result: string; usedIntKeyword: boolean; isFilter: boolean } {
   const substituted = equation
     .replace(/\$/g, `(${value})`)
     .replace(/\bi\b/g, `(${index})`)
   const tokens = tokenize(substituted)
   const parser = new ExprParser(tokens)
   const result = parser.parse()
-  return { result, usedIntKeyword: parser.usedIntKeyword }
+  return {
+    result,
+    usedIntKeyword: parser.usedIntKeyword,
+    isFilter: parser.isFilter,
+  }
 }
 
 // ─── Number Processing ────────────────────────────────────────────────────────
@@ -660,20 +728,24 @@ function processNumber(
   numText: string,
   equation: string,
   index: number,
-): string {
+): string | boolean {
+  // Returns a boolean (keep this number selected?) when the equation is a
+  // top-level comparison, otherwise the replacement text.
   const isHex = /^0x/i.test(numText)
   if (isHex) {
     const caseStyle = detectHexCase(numText)
     const dec = hexToDecStr(numText)
-    const { result } = evaluateExpr(equation, dec, index)
+    const { result, isFilter } = evaluateExpr(equation, dec, index)
+    if (isFilter) return result === "1"
     return decStrToHex(result, caseStyle)
   } else {
     const originalHadDot = numText.includes(".")
-    const { result, usedIntKeyword } = evaluateExpr(
+    const { result, usedIntKeyword, isFilter } = evaluateExpr(
       equation,
       numText,
       index,
     )
+    if (isFilter) return result === "1"
     // `int` explicitly means "give me a whole number, no decimal" — it
     // always strips the .0. floor/ceil/round behave like normal arithmetic
     // and keep the .0 if the original selection had a decimal point.
@@ -711,7 +783,7 @@ export function activate(context: vscode.ExtensionContext): void {
         prompt:
           "Equation  ($ = each number, i = its index). No $ → prepended automatically. Optional floor/ceil/round/int.",
         placeHolder:
-          "$/2   or   $+i   or   /3 floor   or   ($/4int)+.5",
+          "$/2   or   $+i   or   /3 floor   or   ($/4int)+.5   or   $>3 (filter)   or   +($>5)*10",
         validateInput(val) {
           if (!val.trim()) return "Please enter an equation."
           return null
@@ -764,18 +836,33 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // ── Evaluate the equation for each match, now that `i` is known ────────
       const replacements: Replacement[] = []
+      const kept: vscode.Selection[] = []
+      let isFilter = false
       for (let i = 0; i < rawMatches.length; i++) {
         const { numText, startOff, endOff } = rawMatches[i]
 
-        let newText: string
+        let out: string | boolean
         try {
-          newText = processNumber(numText, equation, i)
+          out = processNumber(numText, equation, i)
         } catch (err) {
           vscode.window.showErrorMessage(
             `Math on Selections: Error processing "${numText}": ${err}`,
           )
           return
         }
+
+        if (typeof out === "boolean") {
+          isFilter = true
+          if (out)
+            kept.push(
+              new vscode.Selection(
+                document.positionAt(startOff),
+                document.positionAt(endOff),
+              ),
+            )
+          continue
+        }
+        const newText = out
 
         replacements.push({
           originalStartOffset: startOff,
@@ -786,6 +873,18 @@ export function activate(context: vscode.ExtensionContext): void {
             document.positionAt(endOff),
           ),
         })
+      }
+
+      // ── Filter mode: just narrow the selections, no edits ─────────────────
+      if (isFilter) {
+        if (kept.length === 0) {
+          vscode.window.showInformationMessage(
+            "Math on Selections: No numbers matched the condition.",
+          )
+          return
+        }
+        editor.selections = kept
+        return
       }
 
       // ── Apply all edits in one transaction ────────────────────────────────
