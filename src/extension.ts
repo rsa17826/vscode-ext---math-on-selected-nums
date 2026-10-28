@@ -594,11 +594,8 @@ class ExprParser {
           : multiplyNums(left, secs)
         continue
       }
-      const right = this.parsePower()
-      left =
-        op === "*" ?
-          multiplyNums(left, right)
-        : divideNums(left, right)
+      const right = this.parseTerm()
+      left = op === "+" ? addNums(left, right) : subNums(left, right)
     }
     return left
   }
@@ -625,7 +622,15 @@ class ExprParser {
     }
     return val
   }
-
+  // `1h`, `(2+3)m` → value x seconds-per-unit
+  private applyPostfixUnit(value: string): string {
+    const t = this.peek()
+    if (t && t.type === "unit") {
+      this.consume()
+      return multiplyNums(value, UNIT_SECONDS[t.value])
+    }
+    return value
+  }
   private parseTerm(): string {
     let left = this.parsePower()
     while (true) {
@@ -638,6 +643,17 @@ class ExprParser {
         break
       const op = (this.consume() as { type: "op"; value: string })
         .value
+      const next = this.peek()
+      if (next && next.type === "unit") {
+        this.consume()
+        const secs = UNIT_SECONDS[next.value]
+        // `/m` → x60 (minutes → seconds), `*ms` → ÷0.001 (seconds → ms)
+        left =
+          op === "*" ?
+            divideNums(left, secs)
+          : multiplyNums(left, secs)
+        continue
+      }
       const right = this.parsePower()
       left =
         op === "*" ?
@@ -683,7 +699,7 @@ class ExprParser {
     if (!t) throw new Error("Unexpected end of expression")
     if (t.type === "num") {
       this.consume()
-      return (t as { type: "num"; value: string }).value
+      return this.applyPostfixUnit(t.value)
     }
     if (t.type === "lparen") {
       this.consume()
@@ -691,7 +707,7 @@ class ExprParser {
       if (!this.peek() || this.peek()!.type !== "rparen")
         throw new Error("Expected closing )")
       this.consume()
-      return val
+      return this.applyPostfixUnit(val)
     }
     if (t.type === "unit")
       throw new Error(`Unit "${t.value}" must follow * or /`)
