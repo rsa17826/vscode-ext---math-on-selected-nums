@@ -383,12 +383,24 @@ function decStrToHex(
 //   unary  = '-' unary | primary
 //   primary = NUMBER | '(' expr ')'
 
+// Seconds per unit. y = 365 days.
+const UNIT_SECONDS: Record<string, string> = {
+  y: "31536000",
+  w: "604800",
+  d: "86400",
+  h: "3600",
+  m: "60",
+  s: "1",
+  ms: "0.001",
+}
+
 type Token =
   | { type: "num"; value: string }
   | { type: "op"; value: string }
   | { type: "lparen" }
   | { type: "rparen" }
   | { type: "keyword"; value: "floor" | "ceil" | "round" | "int" }
+  | { type: "unit"; value: string }
 
 function tokenize(expr: string): Token[] {
   const tokens: Token[] = []
@@ -472,6 +484,10 @@ function tokenize(expr: string): Token[] {
       while (i < expr.length && /[a-zA-Z]/.test(expr[i]))
         word += expr[i++]
       const lower = word.toLowerCase()
+      if (Object.prototype.hasOwnProperty.call(UNIT_SECONDS, lower)) {
+        tokens.push({ type: "unit", value: lower })
+        continue
+      }
       if (
         lower === "floor" ||
         lower === "ceil" ||
@@ -567,8 +583,22 @@ class ExprParser {
         break
       const op = (this.consume() as { type: "op"; value: string })
         .value
-      const right = this.parseTerm()
-      left = op === "+" ? addNums(left, right) : subNums(left, right)
+      const next = this.peek()
+      if (next && next.type === "unit") {
+        this.consume()
+        const secs = UNIT_SECONDS[next.value]
+        // `/m` → x60 (minutes → seconds), `*ms` → ÷0.001 (seconds → ms)
+        left =
+          op === "*" ?
+            divideNums(left, secs)
+          : multiplyNums(left, secs)
+        continue
+      }
+      const right = this.parsePower()
+      left =
+        op === "*" ?
+          multiplyNums(left, right)
+        : divideNums(left, right)
     }
     return left
   }
@@ -663,6 +693,8 @@ class ExprParser {
       this.consume()
       return val
     }
+    if (t.type === "unit")
+      throw new Error(`Unit "${t.value}" must follow * or /`)
     throw new Error(`Unexpected token: ${JSON.stringify(t)}`)
   }
 }
@@ -692,8 +724,8 @@ function evaluateExpr(
 // ─── Number Processing ────────────────────────────────────────────────────────
 
 // Matches hex first, then decimal (including decimals like 3.14).
-// Does NOT match a leading minus (that's typically an operator in source code).
-const NUMBER_RE = /0x[0-9a-fA-F]+|\d+(?:\.\d+)?/g
+const NUMBER_RE =
+  /(?:(?<![\w)\]])-)?(?:0x[0-9a-fA-F]+|\d+(?:\.\d+)?)/g
 
 interface Replacement {
   originalStartOffset: number
