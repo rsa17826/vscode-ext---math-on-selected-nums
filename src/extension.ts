@@ -779,7 +779,7 @@ function processNumber(
 ): string | boolean {
   // Returns a boolean (keep this number selected?) when the equation is a
   // top-level comparison, otherwise the replacement text.
-  const isHex = /^0x/i.test(numText)
+  const isHex = /^-?0x/i.test(numText)
   if (isHex) {
     const caseStyle = detectHexCase(numText)
     const dec = hexToDecStr(numText)
