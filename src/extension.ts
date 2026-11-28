@@ -37,6 +37,14 @@ function insertAtIndex(
   return str.slice(0, idx) + sub + str.slice(idx)
 }
 
+function modNums(num1: string, num2: string): string {
+  // a % b = a - b * floor(a / b)
+  const divResult = divideNums(num1, num2, 0) // integer division
+  const intDiv = floorNumStr(divResult)
+  const product = multiplyNums(num2, intDiv)
+  return subNums(num1, product)
+}
+
 function addNums(num1: string, num2: string): string {
   const [n1, n2] = alignNums(num1, num2)
   let carry = 0
@@ -443,7 +451,7 @@ function tokenize(expr: string): Token[] {
       i++
       continue
     }
-    if ("+-*/^".includes(expr[i])) {
+    if ("+-*/^%".includes(expr[i])) {
       // Check for ** before consuming a lone *
       if (expr[i] === "*" && expr[i + 1] === "*") {
         tokens.push({ type: "op", value: "**" })
@@ -638,7 +646,7 @@ class ExprParser {
       if (
         !t ||
         t.type !== "op" ||
-        (t.value !== "*" && t.value !== "/")
+        (t.value !== "*" && t.value !== "/" && t.value !== "%")
       )
         break
       const op = (this.consume() as { type: "op"; value: string })
@@ -656,9 +664,9 @@ class ExprParser {
       }
       const right = this.parsePower()
       left =
-        op === "*" ?
-          multiplyNums(left, right)
-        : divideNums(left, right)
+        op === "*" ? multiplyNums(left, right)
+        : op === "/" ? divideNums(left, right)
+        : modNums(left, right)
     }
     return this.applyTrailingKeywords(left)
   }
